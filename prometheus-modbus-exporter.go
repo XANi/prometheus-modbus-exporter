@@ -20,7 +20,7 @@ import (
 
 var version string
 var log *zap.SugaredLogger
-var debug = true
+var debug = false
 
 // /* embeds with all files, just dir/ ignores files starting with _ or .
 //
@@ -66,21 +66,17 @@ func main() {
 	// register internal stats
 	mon.RegisterGcStats()
 	app := &cli.Command{
-		Name:        "foobar",
+		Name:        "prometheus-modbus-exporter",
 		Aliases:     nil,
 		Usage:       "",
 		UsageText:   "",
 		ArgsUsage:   "",
-		Version:     "",
-		Description: "do foo to bar",
+		Version:     version,
+		Description: "prometheus modbus exporter",
 		Flags:       nil,
 		Commands:    nil,
 		HideHelp:    true,
 	}
-	app.Name = "foobar"
-	app.Description = "do foo to bar"
-	app.Version = version
-	app.HideHelp = true
 	log.Infof("Starting %s version: %s", app.Name, version)
 	app.Flags = []cli.Flag{
 		&cli.BoolFlag{Name: "help, h", Usage: "show help"},
@@ -114,10 +110,12 @@ func main() {
 		var cfg config.Config
 		err := yamlcfg.LoadConfig(cfgFiles, &cfg)
 		for bus, buscfg := range cfg.Bus {
+			buscfg.Name = bus
 			log.Infof("initializing bus %s", bus)
 			_, err := modbus_client.New(modbus_client.Config{
-				Bus:    buscfg,
-				Logger: log.Named(fmt.Sprintf("bus-%s", bus)),
+				Bus:           buscfg,
+				PrometheusURL: cfg.PrometheusURL,
+				Logger:        log.Named(fmt.Sprintf("bus-%s", bus)),
 			})
 			if err != nil {
 				log.Errorf("error initializing bus %s: %s", bus, err)

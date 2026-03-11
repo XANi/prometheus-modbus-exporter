@@ -9,11 +9,13 @@ import (
 )
 
 type Config struct {
-	Bus map[string]modbus_client.Bus
+	Bus           map[string]modbus_client.Bus
+	PrometheusURL string `yaml:"prometheus_url"`
 }
 
 func (c *Config) GetDefaultConfig() string {
 	defaultCfg := Config{
+		PrometheusURL: "http://127.0.0.1:8480/insert/1:0/prometheus/api/v1/write",
 		Bus: map[string]modbus_client.Bus{
 			"serial": {
 				Configuration: modbus.ClientConfiguration{

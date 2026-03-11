@@ -19,6 +19,8 @@
 all units are converted to f64 coz of prometheus
 
 ```
+#prometheus write protocol URL
+prometheus_url: http://127.0.0.1:8480/insert/1:0/prometheus/api/v1/write
 bus:
   serial: # name of the bus, will be added to label
     configuration: # this is direct github.com/simonvetter/modbus config

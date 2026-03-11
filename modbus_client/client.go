@@ -2,7 +2,9 @@ package modbus_client
 
 import (
 	"fmt"
+	"github.com/XANi/promwriter"
 	"go.uber.org/zap"
+	"os"
 	"slices"
 	"time"
 )
@@ -16,20 +18,25 @@ const TypeFloat64 = "f64"
 const TypeUInt32 = "u32"
 const TypeUInt64 = "u64"
 
+var hostname, _ = os.Hostname()
 var units = []string{TypeFloat32, TypeFloat64, TypeUInt32, TypeUInt64}
 var registers = []string{RegisterInput, RegisterHolding}
 
 type Client struct {
-	mbclient *modbus.ModbusClient
-	cfg      *Config
+	mbclient   *modbus.ModbusClient
+	cfg        *Config
+	promwriter *promwriter.PromWriter
+	l          *zap.SugaredLogger
 }
 
 type Config struct {
-	Bus    Bus
-	Logger *zap.SugaredLogger
+	Bus           Bus
+	Logger        *zap.SugaredLogger
+	PrometheusURL string
 }
 
 type Bus struct {
+	Name                string
 	Configuration       modbus.ClientConfiguration `yaml:"configuration"`
 	DefaultRegisterType string                     `yaml:"default_register_type"`
 	DefaultRegisterUnit string                     `yaml:"default_register_unit"`
@@ -56,11 +63,21 @@ type Metric struct {
 func New(cfg Config) (*Client, error) {
 	cl := Client{
 		cfg: &cfg,
+		l:   cfg.Logger,
 	}
 	if cfg.Bus.Configuration.Timeout < time.Millisecond {
 		cfg.Bus.Configuration.Timeout = time.Second
 	}
 	client, err := modbus.NewClient(&cfg.Bus.Configuration)
+	if err != nil {
+		return nil, err
+	}
+	wr, err := promwriter.New(promwriter.Config{
+		URL:              cfg.PrometheusURL,
+		Logger:           cfg.Logger,
+		MaxBatchDuration: time.Second * 20,
+	})
+	cl.promwriter = wr
 	if err != nil {
 		return nil, err
 	}
@@ -77,6 +94,9 @@ func New(cfg Config) (*Client, error) {
 			if metric.Scale == 0 {
 				cfg.Bus.Slaves[bi].Metrics[mi].Scale = 1.0
 			}
+			if metric.Labels == nil {
+				cfg.Bus.Slaves[bi].Metrics[mi].Labels = map[string]string{}
+			}
 			if !slices.Contains(units, metric.RegisterUnit) {
 				return nil, fmt.Errorf("metric %s register_unit[%s] type should be in %+v", metric.Name, metric.RegisterUnit, units)
 			}
@@ -89,9 +109,15 @@ func New(cfg Config) (*Client, error) {
 	err = client.Open()
 	if err == nil {
 		go func() {
-			for {
-				fmt.Printf("%s\n", cl.Run())
-				time.Sleep(time.Second * 1)
+			cl.Run()
+			for range time.Tick(time.Second * 10) {
+				ts1 := time.Now()
+				err := cl.Run()
+				ts2 := time.Now()
+				cfg.Logger.Debugf("Query duration: %s", ts2.Sub(ts1))
+				if err != nil {
+					cfg.Logger.Errorf("error retrieving data from %s: %s", cfg.Bus.Configuration.URL, err)
+				}
 			}
 		}()
 	}
@@ -101,6 +127,7 @@ func New(cfg Config) (*Client, error) {
 func (c *Client) Run() error {
 	for _, slave := range c.cfg.Bus.Slaves {
 		c.mbclient.SetUnitId(slave.ID)
+		metrics := []promwriter.Metric{}
 		for _, metric := range slave.Metrics {
 			regType := modbus.INPUT_REGISTER
 			if metric.RegisterType == RegisterHolding {
@@ -132,11 +159,30 @@ func (c *Client) Run() error {
 			value *= metric.Scale
 			value += metric.Shift
 			if err == nil {
-				fmt.Printf("%s:%s %f\n", slave.Name, metric.Name, value)
+				l := metric.Labels
+				if metric.Unit != "" {
+					l["unit"] = metric.Unit
+				}
+				l["device"] = slave.Name
+				l["bus"] = c.cfg.Bus.Name
+				l["host"] = hostname
+				metrics = append(metrics, promwriter.Metric{
+					TS:     time.Now().UTC(),
+					Name:   metric.Name,
+					Value:  value,
+					Labels: l,
+				})
 			} else {
 				fmt.Println(err)
 			}
 		}
+		for _, metric := range metrics {
+			err := c.promwriter.WriteMetric(metric)
+			if err != nil {
+				c.l.Errorf("error updating metric %s[%s]: %s", metric.Name, slave.Name, err)
+			}
+		}
+
 	}
 	return nil
 }
